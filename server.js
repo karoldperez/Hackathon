@@ -218,6 +218,13 @@ REGLAS GENERALES
 - Si una herramienta devuelve un error o datos vacíos, explícalo de forma sencilla al cliente y ofrece alternativas.
 - Evita tecnicismos complejos; si debes usarlos, explícalos en palabras simples.
 
+MEMORIA Y CONTEXTO DE LA CONVERSACIÓN
+- Mantén el contexto de toda la conversación.
+- Recuerda síntomas, fotos, pasos ya realizados y datos del cliente durante toda la sesión.
+- No pidas información que ya fue proporcionada anteriormente en esta misma conversación.
+- Continúa siempre el proceso de diagnóstico desde el punto en el que quedó el usuario,
+  retomando el último estado lógico (por ejemplo: si ya probaste reiniciar el equipo, no vuelvas a sugerirlo como primer paso).
+
 CASO ESPECIAL: MENSAJE INICIAL O CONTENT VACÍO
 - Antes de aplicar cualquier otra regla, revisa SIEMPRE el ÚLTIMO mensaje del usuario.
 - Si el último mensaje del usuario tiene el campo content vacío (por ejemplo content = "" o solo espacios en blanco):
@@ -265,7 +272,7 @@ FLUJO PRINCIPAL (RESUMIDO)
   - Utiliza los equipos que vienen desde el backend (o llama a get_equipos_cliente si es necesario).
   - Muestra el listado de equipos que tiene (tipo, modelo, marca y ubicación) en un tono natural.
   - Si hay varios equipos, pide aclarar con cuál tiene el problema.
-  - Indica que se puede usar una foto del equipo, pero la foto la manejará otro servicio interno.
+  - Indica que, si lo prefiere, puede subir una imagen del equipo con el que tiene el problema, y que tú también puedes ayudarle a partir de esa foto (aunque la foto la procese otro servicio interno).
 
 3) PROBLEMA DEL EQUIPO
 - Pregunta de forma abierta: “¿Qué problema notas exactamente?”.
@@ -623,14 +630,20 @@ async function getProblemasFrecuentes(modeloEquipo, sintoma) {
    (incluyendo respuestas previas del agente) en cada llamada.
 */
 
-app.post("/api/agente-soporte", async (req, res) => {
+app.post("/api/agente-soporte", upload.single("imagen"), async (req, res) => {
     try {
-        const { messages } = req.body;
+        let { messages } = req.body;
 
-        if (!messages || !Array.isArray(messages)) {
-            return res.status(400).json({
-                error: "Debes enviar un arreglo 'messages' con los mensajes del chat.",
-            });
+        if (req.file) {
+            console.log(">>> LLEGÓ UNA IMAGEN EN EL CAMPO 'imagen'");
+            const resultadoImagen = await manejarImagenEnSoporte(req.file);
+            return res.json(resultadoImagen); // 👈 importante: return aquí
+        } else {
+            if (!messages || !Array.isArray(messages)) {
+                return res.status(400).json({
+                    error: "Debes enviar un arreglo 'messages' con los mensajes del chat.",
+                });
+            }
         }
 
         // 1) Primera llamada al modelo, con tools
@@ -732,3 +745,68 @@ const port = process.env.PORT || 3000;
 app.listen(port, () => {
     console.log(`Servicio REST escuchando en http://localhost:${port}`);
 });
+
+async function manejarImagenEnSoporte(file) {
+    console.log("Procesando imagen en función aparte...");
+
+    // 1) Pasar la imagen a data URL
+    const base64 = file.buffer.toString("base64");
+    const dataUrl = `data:${file.mimetype};base64,${base64}`;
+
+    // 2) Llamar al agente de visión
+    const response = await client.chat.completions.create({
+        model: "gpt-4.1-mini",
+        messages: [
+            {
+                role: "system",
+                content: INSTRUCCIONES_AGENTE, // 👈 tu prompt de visión
+            },
+            {
+                role: "user",
+                content: [
+                    {
+                        type: "text",
+                        text: "Identifica qué equipo es en la foto y responde solo con el JSON.",
+                    },
+                    {
+                        type: "image_url",
+                        image_url: { url: dataUrl },
+                    },
+                ],
+            },
+        ],
+        max_tokens: 400,
+    });
+
+    const text = response.choices[0].message.content;
+
+    let data;
+    try {
+        data = JSON.parse(text);
+    } catch (e) {
+        console.error("No se pudo parsear el JSON de visión:", text);
+        return {
+            reply:
+                "Recibí la imagen, pero no pude identificar bien el equipo. Intenta tomar una foto más clara del frontal y la etiqueta, por favor.",
+        };
+    }
+
+    // 3) Armar una respuesta sencilla para el usuario
+    const { EQUIPMENT_TYPE, BRAND, MODEL, MATCH_CONFIDENCE, MESSAGE } = data;
+
+    if (MATCH_CONFIDENCE < 0.6) {
+        return {
+            reply:
+                MESSAGE ||
+                "No se reconoce bien el equipo en la foto, por favor intenta con otra foto más clara.",
+            infoEquipo: data,
+        };
+    }
+
+    return {
+        reply: `Por la foto, parece que tu equipo es un ${BRAND || "equipo"} ${
+            MODEL || ""
+        } (${EQUIPMENT_TYPE}). Cuéntame qué problema estás notando con ese equipo y te ayudo a revisar.`,
+        infoEquipo: data,
+    };
+}

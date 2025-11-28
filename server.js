@@ -1447,3 +1447,20 @@ Responde SIEMPRE en un objeto JSON con esta estructura:
 - Usa máximo 6–8 pasos a la vez. Si hay más, corta la solución en fases y pide
   confirmación antes de seguir.
 `;
+
+// Servicio para ver y limpiar el historial del agente de soporte
+app.post("/api/agente-soporte/limpiar-historial", (req, res) => {
+    // 1) Imprimir en consola el historial actual
+    console.log("HISTORIAL_CHATS ANTES DE LIMPIAR:", JSON.stringify(HISTORIAL_CHATS, null, 2));
+
+    const cantidadAntes = HISTORIAL_CHATS.length;
+
+    // 2) Vaciar el array (como es const, cambiamos su contenido, no la referencia)
+    HISTORIAL_CHATS.length = 0;
+
+    // 3) Responder al cliente
+    return res.json({
+        mensaje: "Historial limpiado correctamente",
+        cantidadEliminada: cantidadAntes,
+    });
+});

@@ -635,9 +635,46 @@ app.post("/api/agente-soporte", upload.single("imagen"), async (req, res) => {
         let { messages } = req.body;
 
         if (req.file) {
-            console.log(">>> LLEGÓ UNA IMAGEN EN EL CAMPO 'imagen'");
             const resultadoImagen = await manejarImagenEnSoporte(req.file);
-            return res.json(resultadoImagen); // 👈 importante: return aquí
+
+            // 1) Armas el objeto que le quieres pasar al modelo
+            const payloadDiagnostico = {
+                infoEquipo: resultadoImagen?.infoEquipo || null,
+                baseConocimiento: BASE_CONOCIMIENTO_EQUIPOS,
+                // opcional: también puedes mandar lo que ya dijo el modelo de visión
+                mensajeDeteccion: resultadoImagen?.reply || null,
+            };
+
+            // 2) Armas el "messages" (aquí se llama input para responses.create)
+            const input = [
+                {
+                    role: "system",
+                    content: INSTRUCCIONES_DIAGNOSTICO_EQUIPO,
+                },
+                {
+                    role: "user",
+                    content: [
+                        {
+                            type: "input_text",
+                            text: JSON.stringify(payloadDiagnostico),
+                        },
+                    ],
+                },
+            ];
+
+            // 3) Llamas al modelo de diagnóstico con ese input
+            const response = await client.responses.create({
+                model: "gpt-4.1-mini", // o el modelo que estés usando
+                input,
+            });
+
+            // 4) El prompt dice que responde un JSON, lo parseas
+            const textoRespuesta = response.output[0].content[0].text;
+            const jsonRespuesta = JSON.parse(textoRespuesta);
+
+            // 5) Respondes eso al front
+            return res.json({ reply: jsonRespuesta.reply });
+
         } else {
             if (!messages || !Array.isArray(messages)) {
                 return res.status(400).json({
@@ -804,9 +841,589 @@ async function manejarImagenEnSoporte(file) {
     }
 
     return {
-        reply: `Por la foto, parece que tu equipo es un ${BRAND || "equipo"} ${
-            MODEL || ""
-        } (${EQUIPMENT_TYPE}). Cuéntame qué problema estás notando con ese equipo y te ayudo a revisar.`,
+        reply: `Por la foto, parece que tu equipo es un ${BRAND || "equipo"} ${MODEL || ""
+            } (${EQUIPMENT_TYPE}). Cuéntame qué problema estás notando con ese equipo y te ayudo a revisar.`,
         infoEquipo: data,
     };
 }
+
+// =========================================================
+// BASE DE CONOCIMIENTO DE EQUIPOS (MANUALES + PROBLEMAS)
+// =========================================================
+
+const BASE_CONOCIMIENTO_EQUIPOS = [
+    {
+        "device_model": "INFINITY 601",
+        "device_type": "cablemodem_gateway_docsis",
+        "manual_file": "INFINITY 601_Manual de usuario.pdf",
+        "description": "Gateway residencial DOCSIS 3.1 con switch integrado y WiFi 802.11a/b/g/n/ac/ax, 4 puertos Gigabit Ethernet y 2 puertos FXS.",
+        "key_features": [
+            "Compatible con DOCSIS 3.1 y versiones anteriores DOCSIS/EuroDOCSIS 3.0",
+            "Funciona como puerta de enlace residencial con 5 puertos de switch + WiFi",
+            "4 puertos Gigabit Ethernet, 1 puerto 2.5GbE y 2 puertos FXS para telefonía"
+        ],
+        "leds": [
+            {
+                "name": "Power",
+                "description": "Indica encendido del equipo (se asume: encendido = tiene energía)."
+            },
+            {
+                "name": "DS/US",
+                "description": "Indica sincronismo de downstream/upstream DOCSIS (parpadeo vs fijo sugiere estado de conexión)."
+            },
+            {
+                "name": "Internet",
+                "description": "Estado de conexión a Internet a nivel IP (accesibilidad hacia red del operador)."
+            },
+            {
+                "name": "LAN",
+                "description": "Estado de enlaces Ethernet hacia dispositivos del cliente."
+            },
+            {
+                "name": "WiFi",
+                "description": "Estado de la red inalámbrica local."
+            },
+            {
+                "name": "TEL",
+                "description": "Estado de los puertos de telefonía FXS."
+            }
+        ],
+        "buttons": [
+            {
+                "name": "Reset/Restore Gateway",
+                "location": "Interfaz de administración web > Troubleshooting > Reset/Restore Gateway",
+                "behavior": "Permite reiniciar o restaurar el Gateway a valores de fábrica. Restaurar borra configuraciones como contraseñas, controles parentales y firewall.",
+                "risk_warning": "Restaurar (factory reset) borra todas las configuraciones personalizadas del cliente."
+            }
+        ],
+        "diagnostic_tools": [
+            {
+                "name": "Logs",
+                "description": "Permite ver información de rendimiento y operación del sistema para identificar problemas y riesgos de seguridad.",
+                "manual_reference": "Troubleshooting > Logs"
+            },
+            {
+                "name": "Diagnostic Tools",
+                "description": "Herramientas para solucionar problemas de conectividad y velocidad de la red (ping, traceroute a direcciones IPv4/IPv6).",
+                "manual_reference": "Troubleshooting > Diagnostic Tools"
+            },
+            {
+                "name": "Wi-Fi Spectrum Analyzer",
+                "description": "Ayuda a analizar el espectro WiFi para detectar interferencias.",
+                "manual_reference": "Troubleshooting > Wi-Fi Spectrum Analyzer"
+            }
+        ],
+        "typical_problems": [
+            {
+                "id": "INF601-P1",
+                "customer_description": "Tengo WiFi pero las páginas no cargan o la conexión es inestable.",
+                "probable_causes": [
+                    "Problemas de conectividad IP hacia Internet",
+                    "Configuración IP incorrecta en el PC o dispositivo",
+                    "Interferencias WiFi"
+                ],
+                "led_pattern_hint": "WiFi encendido, pero posible estado anómalo en LED de Internet o DS/US.",
+                "troubleshooting_steps": [
+                    "Pedir al cliente que confirme si otros dispositivos también tienen el problema.",
+                    "Sugerir revisar/renovar la configuración IP del dispositivo (usar DHCP automático según el manual).",
+                    "Proponer usar las herramientas de diagnóstico (ping o traceroute) desde la interfaz web para validar conectividad hacia destinos externos.",
+                    "Si sigue fallando, sugerir reinicio del gateway desde Troubleshooting > Reset/Restore Gateway (solo reset, no restore)."
+                ]
+            },
+            {
+                "id": "INF601-P2",
+                "customer_description": "El Internet se ha vuelto muy lento.",
+                "probable_causes": [
+                    "Problemas de ruta/red externa",
+                    "Interferencias o saturación de canal WiFi",
+                    "Consumo elevado de ancho de banda por dispositivos conectados"
+                ],
+                "led_pattern_hint": "LEDs de DS/US e Internet aparentan normales, pero experiencia percibida es de lentitud.",
+                "troubleshooting_steps": [
+                    "Pedir al cliente que pruebe con un solo dispositivo por cable para descartar WiFi.",
+                    "Sugerir uso de 'Diagnostic Tools' para verificar latencias (ping) y rutas (traceroute).",
+                    "Recomendar revisar el 'Wi-Fi Spectrum Analyzer' para cambiar de canal si hay interferencias.",
+                    "Si las pruebas indican problemas fuera del hogar, escalar a soporte de red del operador."
+                ]
+            },
+            {
+                "id": "INF601-P3",
+                "customer_description": "Olvidé la contraseña de administración y los ajustes están desordenados.",
+                "probable_causes": [
+                    "Cambio de credenciales por parte del cliente",
+                    "Configuraciones acumuladas en control parental, firewall, etc."
+                ],
+                "led_pattern_hint": "LEDs probablemente normales; el problema es de configuración lógica.",
+                "troubleshooting_steps": [
+                    "Guiar al cliente para acceder a la IP de gestión indicada en la etiqueta del equipo.",
+                    "Si no recuerda usuario/clave, explicar opción de restaurar a valores de fábrica desde Troubleshooting > Reset/Restore Gateway, advirtiendo que se perderán ajustes personalizados.",
+                    "Tras restaurar, acompañar en un asistente básico de configuración (SSID, contraseña WiFi, etc.)."
+                ]
+            }
+        ],
+        "diagnostic_guides": [
+            {
+                "id": "INF601-GENERAL",
+                "title": "Protocolo básico de diagnóstico para Infinity 601",
+                "steps": [
+                    "Verificar que el equipo esté energizado (LED Power encendido).",
+                    "Confirmar estado de LEDs DS/US e Internet para identificar si hay sincronismo DOCSIS y conexión IP.",
+                    "Pedir al cliente que pruebe conexión por cable y por WiFi.",
+                    "Si el problema es de navegación o velocidad, utilizar 'Diagnostic Tools' desde la GUI web para probar conectividad a destinos de prueba.",
+                    "Si los LEDs de red se ven normales pero no hay servicio, escalar a soporte de red.",
+                    "Si hay múltiples cambios de configuración, valorar usar Reset/Restore con advertencia explícita al cliente."
+                ]
+            }
+        ]
+    },
+
+    // =================== EJEMPLO 2: ZTE ZXHN H3601P V9.4 ===================
+    {
+        "device_model": "ZXHN F6601P",
+        "device_type": "ont_gpon",
+        "manual_file": "Manual de Usuario ZXHN F6601P (V9.3).pdf",
+        "description": "ONT GPON con interfaces Ethernet, teléfono, WiFi dual band y USB 2.0 para servicios de Internet, IPTV y telefonía.",
+        "key_features": [
+            "Interfaz GPON SC/APC para acceso de banda ancha",
+            "4 puertos Ethernet RJ-45 100/1000 Mbps",
+            "1 puerto telefónico RJ-11 (POTS) con soporte SIP",
+            "WiFi 2.4GHz y 5GHz (802.11b/g/n/ax y 802.11a/n/ac/ax)",
+            "Puerto USB 2.0 para almacenamiento y compartición de archivos"
+        ],
+        "leds": [
+            {
+                "name": "Power",
+                "states": [
+                    { "value": "apagado", "meaning": "Dispositivo apagado." },
+                    { "value": "blanco fijo", "meaning": "Dispositivo encendido." }
+                ]
+            },
+            {
+                "name": "PON",
+                "states": [
+                    { "value": "apagado", "meaning": "Dispositivo apagado o aún no comenzó el proceso de registro." },
+                    { "value": "blanco fijo", "meaning": "Registro exitoso en la red GPON." },
+                    { "value": "blanco parpadeando lento", "meaning": "El dispositivo se está registrando en la red." },
+                    { "value": "blanco parpadeando rápido", "meaning": "El dispositivo está siendo actualizado." }
+                ]
+            },
+            {
+                "name": "LOS",
+                "states": [
+                    { "value": "apagado", "meaning": "Potencia óptica recibida normal (sin fallo)." },
+                    { "value": "rojo fijo", "meaning": "Transmisor óptico apagado en la interfaz PON." },
+                    { "value": "rojo parpadeando", "meaning": "La potencia óptica recibida es menor que la sensibilidad del receptor (posible corte/falla de fibra)." }
+                ]
+            },
+            {
+                "name": "Internet",
+                "states": [
+                    { "value": "apagado", "meaning": "Dispositivo apagado o no hay conexión WAN con propiedades de Internet configuradas o sesión desconectada." },
+                    { "value": "blanco fijo", "meaning": "Hay dirección IP WAN de Internet válida (IPCP, DHCP o estática)." },
+                    { "value": "blanco parpadeando", "meaning": "Hay tráfico IP pasando por la conexión WAN." }
+                ]
+            },
+            {
+                "name": "Phone",
+                "states": [
+                    { "value": "apagado", "meaning": "Dispositivo apagado o servicio de voz no registrado en softswitch/IMS." },
+                    { "value": "blanco fijo", "meaning": "Teléfono registrado, sin tráfico de voz." },
+                    { "value": "blanco parpadeando", "meaning": "Tráfico de voz en curso." }
+                ]
+            },
+            {
+                "name": "LAN1-LAN4",
+                "states": [
+                    { "value": "apagado", "meaning": "Dispositivo apagado o sin enlace de red en el puerto." },
+                    { "value": "blanco fijo", "meaning": "Enlace establecido, sin transmisión de datos." },
+                    { "value": "blanco parpadeando", "meaning": "Datos transmitiéndose o recibiéndose." }
+                ]
+            },
+            {
+                "name": "WiFi",
+                "states": [
+                    { "value": "apagado", "meaning": "Dispositivo apagado o WiFi desactivado." },
+                    { "value": "blanco fijo", "meaning": "WiFi activado, sin transmisión de datos." },
+                    { "value": "blanco parpadeando", "meaning": "Datos WiFi en transmisión." }
+                ]
+            },
+            {
+                "name": "WPS",
+                "states": [
+                    { "value": "apagado", "meaning": "Dispositivo apagado o WPS desactivado." },
+                    { "value": "blanco fijo", "meaning": "Algún dispositivo se ha conectado mediante WPS." },
+                    { "value": "blanco parpadeando", "meaning": "Dispositivos intentando conectarse o negociación en curso. Un parpadeo rojo indica error o superposición de sesión." }
+                ]
+            },
+            {
+                "name": "USB",
+                "states": [
+                    { "value": "apagado", "meaning": "Dispositivo apagado o interfaz USB no conectada." },
+                    { "value": "blanco fijo", "meaning": "USB conectada, funcionando en modo host, sin transmisión de datos." },
+                    { "value": "blanco parpadeando", "meaning": "Datos transmitiéndose por la interfaz USB." }
+                ]
+            }
+        ],
+        "buttons": [
+            {
+                "name": "Power",
+                "description": "Enciende o apaga el dispositivo después de conectar todos los cables."
+            },
+            {
+                "name": "WPS/Wi-Fi",
+                "description": "Controla activación WiFi y WPS.",
+                "usage": [
+                    "Pulsar hasta 3 segundos: activa o desactiva la función WLAN.",
+                    "Pulsar más de 3 segundos: activa o desactiva la función WPS para emparejar dispositivos."
+                ]
+            },
+            {
+                "name": "Reset",
+                "description": "Reinicia o restaura la configuración.",
+                "usage": [
+                    "Mantener presionado ~1 segundo: reinicia el dispositivo sin perder configuración.",
+                    "Mantener presionado >5 segundos: restaura valores de fábrica."
+                ],
+                "risk_warning": "El reset prolongado borra todas las configuraciones del usuario."
+            }
+        ],
+        "typical_problems": [
+            {
+                "id": "F6601P-P1",
+                "customer_description": "La luz LOS está roja o parpadeando y no tengo Internet.",
+                "probable_causes": [
+                    "Falla en la señal óptica (fibra desconectada, dañada o con potencia insuficiente)."
+                ],
+                "led_pattern_hint": "LOS rojo fijo o parpadeando, PON posiblemente apagado o sin registro.",
+                "troubleshooting_steps": [
+                    "Pedir al cliente que revise visualmente el cable de fibra: que no esté doblado, aplastado ni desconectado del puerto PON.",
+                    "Verificar que el equipo esté encendido (Power blanco fijo).",
+                    "Si después de revisar la fibra el LED LOS sigue rojo, indicar que se trata probablemente de un problema externo (red óptica) y que requiere visita técnica.",
+                    "Crear o actualizar el caso para soporte de campo."
+                ]
+            },
+            {
+                "id": "F6601P-P2",
+                "customer_description": "Las luces Power y PON están blancas, pero no puedo navegar por Internet.",
+                "probable_causes": [
+                    "La ONT está registrada pero no tiene sesión de Internet activa.",
+                    "Problema de configuración IP o sesión PPP/DHCP."
+                ],
+                "led_pattern_hint": "Power blanco fijo, PON blanco fijo, Internet apagado o sin parpadeo/tráfico.",
+                "troubleshooting_steps": [
+                    "Confirmar el estado del LED Internet (apagado, fijo o parpadeando).",
+                    "Si está apagado, indicar que no hay conexión WAN activa; sugerir reinicio corto del equipo.",
+                    "Probar navegación con un PC por cable en LAN1–LAN4.",
+                    "Si tras el reinicio Internet sigue apagado, escalar a soporte de provisión/OLT."
+                ]
+            },
+            {
+                "id": "F6601P-P3",
+                "customer_description": "Tengo WiFi encendido pero la señal no llega bien o se corta en algunas zonas.",
+                "probable_causes": [
+                    "Ubicación inadecuada del ONT.",
+                    "Demasiados obstáculos o interferencias cerca del equipo."
+                ],
+                "led_pattern_hint": "WiFi blanco fijo o parpadeando, Internet con tráfico normal.",
+                "troubleshooting_steps": [
+                    "Explicar al cliente que la cobertura depende de ubicación, distancia y obstáculos.",
+                    "Recomendar colocar el ONT lejos de objetos metálicos, espejos y electrodomésticos como microondas o teléfonos inalámbricos.",
+                    "Sugerir ubicarlo en el mismo piso donde se usan los dispositivos, en una zona central y despejada, a una altura de ~1.2–1.5m.",
+                    "Si la vivienda es grande, recomendar evaluación para soluciones adicionales (extensores/mesh)."
+                ]
+            },
+            {
+                "id": "F6601P-P4",
+                "customer_description": "El teléfono conectado al puerto Phone no tiene tono.",
+                "probable_causes": [
+                    "Servicio de voz no registrado en el softswitch/IMS.",
+                    "Cable telefónico desconectado o defecto en el terminal."
+                ],
+                "led_pattern_hint": "Phone apagado.",
+                "troubleshooting_steps": [
+                    "Pedir al cliente revisar que el teléfono esté correctamente conectado al puerto Phone con cable RJ-11.",
+                    "Solicitar reinicio corto del ONT.",
+                    "Si el LED Phone sigue apagado, indicar que la línea no se está registrando y escalar a soporte de voz/plataforma."
+                ]
+            }
+        ],
+        "diagnostic_guides": [
+            {
+                "id": "F6601P-GENERAL",
+                "title": "Protocolo básico de diagnóstico para ZXHN F6601P",
+                "steps": [
+                    "Verificar que el LED Power esté blanco fijo.",
+                    "Revisar LED PON: si no está blanco fijo, interpretar estado (registro en curso, actualización, sin registro).",
+                    "Revisar LED LOS: si está rojo fijo o parpadeando, tratar como problema de fibra y evitar manipulación excesiva; si persiste, escalar a soporte de red óptica.",
+                    "Si PON y LOS son normales, revisar LED Internet y probar conectividad con un dispositivo por cable.",
+                    "Revisar estado de LEDs LAN1–LAN4 mientras se conecta un dispositivo.",
+                    "Para problemas de WiFi, revisar ubicación del equipo y aplicar recomendaciones de instalación (ubicación central, evitar interferencias, misma planta).",
+                    "Usar botón Reset solo como último recurso, explicando claramente el impacto al cliente."
+                ]
+            }
+        ]
+    },
+
+    {
+        "device_model": "SR1021F",
+        "device_type": "router_mesh_wifi6",
+        "manual_file": "Manual de Usuario- SR1021F.pdf",
+        "description": "Router inalámbrico / nodo mesh con WiFi de doble banda (2.4GHz y 5GHz) y 2 interfaces Ethernet.",
+        "key_features": [
+            "Acceso inalámbrico Wi-Fi 2.4GHz y 5GHz",
+            "2 puertos Ethernet",
+            "Cobertura típica mayor a 50m en condiciones normales",
+            "Diseñado para montaje sobre escritorio"
+        ],
+        "leds": [
+            {
+                "name": "LED principal de estado",
+                "states": [
+                    {
+                        "value": "apagado",
+                        "meaning": "El router está apagado o no funciona correctamente."
+                    },
+                    {
+                        "value": "rojo encendido",
+                        "meaning": "Se produjo una situación anormal; el router no pudo conectar a Internet."
+                    },
+                    {
+                        "value": "verde encendido",
+                        "meaning": "El router se instaló correctamente y funciona de forma normal."
+                    }
+                ],
+                "manual_reference": "Sección indicador LEDs"
+            }
+        ],
+        "buttons": [
+            {
+                "name": "Botón Fi (Mesh)",
+                "description": "Se utiliza para establecer red en malla entre enrutador principal y sub-router.",
+                "usage": [
+                    "Acercar el sub-router al enrutador principal.",
+                    "Presionar botón Fi en el router principal de 3 a 5 segundos hasta que el LED de Fi parpadee lentamente.",
+                    "Presionar botón Fi en el sub-router más de 10 segundos hasta que el LED de Fi parpadee rápidamente.",
+                    "La red mesh se establecerá automáticamente."
+                ]
+            },
+            {
+                "name": "Botón de reinicio",
+                "description": "Reinicia o restaura el dispositivo.",
+                "usage": [
+                    "Presionar menos de 5 segundos para reiniciar el equipo sin perder configuración.",
+                    "Presionar 5 segundos o más para restaurar valores de fábrica."
+                ],
+                "risk_warning": "Restaurar borra configuraciones personalizadas (SSID, contraseña, etc.)."
+            }
+        ],
+        "typical_problems": [
+            {
+                "id": "SR1021F-P1",
+                "customer_description": "El equipo tiene la luz roja y no tengo Internet.",
+                "probable_causes": [
+                    "El router no pudo establecer conexión a Internet (fallo en WAN o en el equipo principal si trabaja como sub-router)."
+                ],
+                "led_pattern_hint": "LED principal en rojo encendido.",
+                "troubleshooting_steps": [
+                    "Pedir al cliente que verifique si el router principal o módem está encendido y con servicio.",
+                    "Revisar que el cable Ethernet hacia la WAN o puerto LAN del principal esté bien conectado.",
+                    "Solicitar un reinicio corto (menos de 5 segundos en botón de reinicio).",
+                    "Si el SR1021F actúa como sub-router mesh, rehacer el emparejamiento usando el botón Fi en ambos equipos.",
+                    "Si el LED permanece rojo, escalar a soporte de nivel 2."
+                ]
+            },
+            {
+                "id": "SR1021F-P2",
+                "customer_description": "La señal WiFi es muy débil o inestable en algunas habitaciones.",
+                "probable_causes": [
+                    "Demasiados obstáculos físicos entre router y dispositivos.",
+                    "Ubicación inadecuada del equipo (esquinas, cerca de interferencias)."
+                ],
+                "led_pattern_hint": "LED en verde (router funcionando), pero mala experiencia de cobertura.",
+                "troubleshooting_steps": [
+                    "Confirmar que el SR1021F está montado sobre una superficie estable y visible.",
+                    "Pedir al cliente que lo aleje de objetos metálicos, espejos y electrodomésticos que generen interferencia.",
+                    "Recomendar ubicar el equipo en una zona más central de la vivienda para aprovechar el radio >50m.",
+                    "Si hay dos unidades SR1021F, revisar que la red mesh esté correctamente establecida con el botón Fi."
+                ]
+            },
+            {
+                "id": "SR1021F-P3",
+                "customer_description": "No recuerdo la contraseña WiFi o mis dispositivos no se conectan.",
+                "probable_causes": [
+                    "Dispositivos usando contraseña antigua.",
+                    "Cambio accidental de SSID/contraseña."
+                ],
+                "led_pattern_hint": "LED verde encendido, pero dispositivos no autentican.",
+                "troubleshooting_steps": [
+                    "Indicar al cliente que revise el SSID y la contraseña configurados según las instrucciones del manual.",
+                    "Si no logra acceder, sugerir usar un reinicio prolongado (más de 5 segundos) para restaurar valores de fábrica, explicando el impacto.",
+                    "Una vez restaurado, acompañar para configurar de nuevo SSID y contraseña."
+                ]
+            }
+        ],
+        "diagnostic_guides": [
+            {
+                "id": "SR1021F-GENERAL",
+                "title": "Protocolo básico de diagnóstico para SR1021F",
+                "steps": [
+                    "Verificar estado del LED principal (apagado, rojo, verde).",
+                    "Si está apagado, revisar alimentación y cables de energía.",
+                    "Si está rojo, revisar conectividad WAN/cable hacia el router principal y reiniciar.",
+                    "Si el problema es de cobertura, revisar ubicación y obstáculos; reubicar equipo si es necesario.",
+                    "Si forma parte de una red mesh, validar emparejamiento usando el botón Fi.",
+                    "Como último recurso, considerar reset a valores de fábrica, advirtiendo impacto al cliente."
+                ]
+            }
+        ]
+    }
+];
+
+
+const INSTRUCCIONES_DIAGNOSTICO_EQUIPO = `
+Eres ClaroFix, un AGENTE VIRTUAL DE SOPORTE TÉCNICO especializado en equipos de telecomunicaciones
+(routers, ONT, cablemodems, decodificadores, CPE LTE/5G, routers mesh, etc.).
+
+Tu objetivo es AYUDAR PASO A PASO a un cliente con POCO conocimiento de tecnología, usando SIEMPRE:
+
+1) La información del equipo que ya fue reconocida desde una imagen: \`infoEquipo\`
+   (por ejemplo: tipo de equipo, marca, modelo, nivel de confianza, etc.).
+2) La base de conocimiento \`BASE_CONOCIMIENTO_EQUIPOS\`, que contiene:
+   - descripción del equipo
+   - LEDs y significado
+   - botones y usos
+   - problemas típicos (\`typical_problems\`)
+   - guías de diagnóstico (\`diagnostic_guides\`).
+3) Lo que el usuario te cuente sobre el problema (texto del chat) y, si está disponible,
+   lo que se vea en la imagen (por ejemplo: LEDs encendidos, colores, mensajes de error en la pantalla, etc.).
+
+--------------------------------------------------------
+### CONTEXTO QUE RECIBES (NO LO REPITAS AL USUARIO)
+--------------------------------------------------------
+
+- \`infoEquipo\`: objeto JSON similar a:
+  {
+    "EQUIPMENT_TYPE": "...",
+    "BRAND": "...",
+    "MODEL": "...",
+    "MATCH_CONFIDENCE": 0.9,
+    ...
+  }
+
+- \`BASE_CONOCIMIENTO_EQUIPOS\`: arreglo JSON con la información de varios equipos,
+  incluyendo campos como \`device_model\`, \`device_type\`, \`typical_problems\`,
+  \`diagnostic_guides\`, etc.
+
+Debes usar \`infoEquipo\` para encontrar en \`BASE_CONOCIMIENTO_EQUIPOS\` el equipo
+que mejor coincida (por ejemplo, comparando \`MODEL\` con \`device_model\`).
+Si no encuentras una coincidencia exacta, busca la más cercana por marca/modelo.
+Si aun así no encuentras nada, dilo de forma honesta y responde con consejos GENÉRICOS,
+pero sigue siendo amable y claro.
+
+--------------------------------------------------------
+### OBJETIVO PRINCIPAL
+--------------------------------------------------------
+
+Con la información de \`infoEquipo\`, la base de conocimiento y lo que describa el cliente:
+
+- Identifica (si es posible) cuál de los \`typical_problems\` del equipo se parece más
+  al problema del cliente (por descripción y/o por patrón de LEDs).
+- Si la imagen da pistas adicionales (por ejemplo un LED LOS rojo, un LED Internet apagado,
+  LED principal en rojo, etc.), úsalas para seleccionar el problema más probable.
+- Si el problema no está claro, HAZ PREGUNTAS SIMPLES para aclarar la situación
+  (por ejemplo: “¿Qué luces ves encendidas y de qué color?”, “¿Puedes decirme si la luz LOS está roja fija o parpadeando?”).
+- Una vez tengas un problema probable, guía al cliente con un PASO A PASO basado en
+  \`troubleshooting_steps\` y \`diagnostic_guides\` del equipo que corresponda.
+
+--------------------------------------------------------
+### ESTILO DE CONVERSACIÓN CON EL CLIENTE
+--------------------------------------------------------
+
+- Asume que el cliente NO es técnico.
+- Usa frases cortas, claras y en segunda persona (“tú”).
+- No uses siglas técnicas sin explicarlas brevemente (por ejemplo, si dices “ONT”,
+  aclara “el equipo de fibra que tienes en tu casa”).
+- Habla con tono empático y tranquilo, por ejemplo:
+  - “Tranquilo, vamos a revisarlo paso a paso.”
+  - “Te acompaño en todo el proceso.”
+
+- Da instrucciones en formato de lista de pasos numerados:
+  1. Paso 1…
+  2. Paso 2…
+  3. Paso 3…
+
+- Después de 2 o 3 pasos importantes, PIDE SIEMPRE CONFIRMACIÓN al cliente:
+  “Cuando lo tengas, dime cómo te fue para continuar.”
+
+--------------------------------------------------------
+### CÓMO USAR LA BASE DE CONOCIMIENTO
+--------------------------------------------------------
+
+1) **Elegir el equipo**:
+   - Busca en \`BASE_CONOCIMIENTO_EQUIPOS\` el registro cuyo \`device_model\`
+     coincida mejor con \`infoEquipo.MODEL\`.
+   - Si hay varias coincidencias, elige la más similar.
+   - Incluye en tu respuesta el nombre del modelo para que el cliente sepa qué equipo estás trabajando.
+
+2) **Intentar identificar el problema**:
+   - Compara lo que el cliente diga (por ejemplo: “tengo WiFi pero no cargan las páginas”,
+     “la luz LOS está roja”, “la luz está en rojo”, “no tengo tono en el teléfono”)
+     contra la lista \`typical_problems[]\` del equipo.
+   - Usa también las pistas de \`led_pattern_hint\` para preguntar por LEDs concretos
+     (Power, Internet, LOS, PON, WiFi, etc.).
+   - Si la descripción del cliente encaja claramente con un \`typical_problems.id\`,
+     trabaja con ese problema.
+   - Si no encaja con ninguno, aplica primero la \`diagnostic_guides[]\` general del equipo
+     y ve descartando causas con preguntas sencillas.
+
+3) **Dar el paso a paso de solución**:
+   - Usa los \`troubleshooting_steps\` del problema elegido y las \`diagnostic_guides\`
+     como base.
+   - Adapta el lenguaje para que sea muy sencillo, sin copiar literalmente texto extenso del manual.
+   - Ordena los pasos de forma lógica: primero verificaciones simples (ver LEDs, revisar cables),
+     luego acciones como reiniciar, y finalmente escalar el caso si es necesario.
+   - Si un paso implica riesgo (por ejemplo un reset de fábrica),
+     EXPLICA SIEMPRE el riesgo de forma clara antes de pedir que lo haga.
+
+4) **Si el problema parece externo (red del operador)**:
+   - Explícalo al cliente con frases claras (por ejemplo: “Parece que el problema está en la red externa, no en tu casa”).
+   - Indica que se debe escalar a soporte técnico o generar una visita técnica,
+     según lo que indiquen los \`troubleshooting_steps\` y \`diagnostic_guides\`.
+
+--------------------------------------------------------
+### CUANDO NO TENGAS TODA LA INFORMACIÓN
+--------------------------------------------------------
+
+- Si la imagen del equipo NO es suficiente para ver el estado de LEDs o cables,
+  pide al cliente que te describa lo que ve:
+  - “¿Qué luces ves encendidas en el equipo y de qué color?”
+  - “¿La luz que dice LOS está apagada, roja fija o parpadeando?”
+  - “¿El cable que va al módem o a la pared está bien conectado?”
+
+- Si después de algunas preguntas sigues sin poder identificar el problema exacto:
+  - Dilo de forma honesta.
+  - Ofrece una guía general de revisión (energía, cables, reinicio corto).
+  - Sugiere escalar a soporte técnico con visita si la base de conocimiento indica que es probable
+    un problema de red externa o de fibra.
+
+--------------------------------------------------------
+### FORMATO DE RESPUESTA
+--------------------------------------------------------
+
+Responde SIEMPRE en un objeto JSON con esta estructura:
+
+{
+  "reply": "<mensaje para el cliente con explicación + pasos numerados>",
+  "equipoDetectado": {
+    "device_model": "<modelo según BASE_CONOCIMIENTO_EQUIPOS o null>",
+    "device_type": "<tipo de equipo o null>"
+  },
+  "problemaBaseConocimientoId": "<id del typical_problems elegido, por ejemplo 'INF601-P1', o null si no aplica>",
+  "requiereMasInfoDelCliente": true | false
+}
+
+- En \`reply\` NO incluyas el JSON ni explicaciones técnicas internas; solo el texto
+  que leerá el cliente, con un tono cercano y pasos claros.
+- Usa máximo 6–8 pasos a la vez. Si hay más, corta la solución en fases y pide
+  confirmación antes de seguir.
+`;

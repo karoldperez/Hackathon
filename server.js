@@ -672,21 +672,32 @@ app.post("/api/agente-soporte", upload.single("imagen"), async (req, res) => {
             const textoRespuesta = response.output[0].content[0].text;
             const jsonRespuesta = JSON.parse(textoRespuesta);
 
+            agregarHistorialMensaje("assistant", jsonRespuesta.reply);
             // 5) Respondes eso al front
             return res.json({ reply: jsonRespuesta.reply });
+            
 
         } else {
-            if (!messages || !Array.isArray(messages)) {
+            // ✅ Validamos bien antes de usar messages[0]
+            if (!messages || !Array.isArray(messages) || messages.length === 0) {
                 return res.status(400).json({
                     error: "Debes enviar un arreglo 'messages' con los mensajes del chat.",
                 });
+            } else {
+                // Tomamos el PRIMER mensaje del arreglo (porque tú lo estás usando así)
+                const primerMensaje = messages[0];
+                agregarHistorialMensaje("user", primerMensaje.content || "");
             }
         }
+
 
         // 1) Primera llamada al modelo, con tools
         const chatMessages = [
             { role: "system", content: INSTRUCCIONES_SOPORTE },
-            ...messages,
+            ...HISTORIAL_CHATS.map((m) => ({
+                role: m.role,
+                content: m.content,
+            })),
         ];
 
         const completion = await client.chat.completions.create({
@@ -761,10 +772,13 @@ app.post("/api/agente-soporte", upload.single("imagen"), async (req, res) => {
             });
 
             const finalText = secondCompletion.choices[0].message.content;
+
+            agregarHistorialMensaje("assistant", finalText);
             return res.json({ reply: finalText });
         }
 
         // 3) Si NO hay tool calls, devolvemos directamente el contenido
+        agregarHistorialMensaje("assistant", responseMessage.content);
         return res.json({ reply: responseMessage.content });
     } catch (err) {
         console.error("Error en /api/agente-soporte:", err);
@@ -773,6 +787,12 @@ app.post("/api/agente-soporte", upload.single("imagen"), async (req, res) => {
         });
     }
 });
+
+const HISTORIAL_CHATS = [];
+
+function agregarHistorialMensaje(role, content) {
+    HISTORIAL_CHATS.push({ role, content });
+}
 
 /* =========================================================
    7) ARRANQUE DEL SERVICIO
